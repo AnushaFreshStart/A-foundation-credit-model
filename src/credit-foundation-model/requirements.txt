@@ -1,0 +1,26 @@
+# Core web framework
+fastapi==0.100.0
+uvicorn==0.23.1
+
+# Data processing
+pandas
+numpy
+duckdb
+pyarrow
+scikit-learn
+
+# Deep learning
+torch
+pytorch-forecasting
+
+# ML models
+xgboost
+lightgbm
+
+# Configuration
+pyyaml
+
+# Additional utilities
+tqdm
+matplotlib
+

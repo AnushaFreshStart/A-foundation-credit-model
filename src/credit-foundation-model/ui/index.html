@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Credit Foundation Model — Dashboard</title>
+  <meta name="description" content="Credit Foundation Model: Bronze/Silver/Gold data pipeline with XGBoost baseline for Dutch residential mortgage default prediction.">
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- -- Header ---------------------------------------------------- -->
+  <header class="header mb-28">
+    <div class="header-brand">
+      <div class="header-logo">🏦</div>
+      <div>
+        <div class="header-title">Credit Foundation Model</div>
+        <div class="header-subtitle">Dutch RMBS · ESMA Annex 2 · Hypoport Schema · DuckDB Pipeline</div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <span id="db-badge" class="header-badge" style="display:none">DB Ready</span>
+      <div class="status-badge status-idle" id="global-status">
+        <span class="dot"></span>
+        <span id="global-status-text">Initializing</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- -- DB Stats Row ----------------------------------------------─ -->
+  <div class="section-title mb-12">Database Status</div>
+  <div class="grid-4 mb-28" id="stats-grid">
+    <div class="card stat-card">
+      <div class="card-icon icon-blue" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;">🏗</div>
+      <div class="stat-value accent-blue" id="stat-static">—</div>
+      <div class="stat-label">Static Loans</div>
+      <div class="stat-delta neutral" id="stat-static-sub">Not loaded</div>
+    </div>
+    <div class="card stat-card">
+      <div class="card-icon icon-cyan" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;">📈</div>
+      <div class="stat-value accent-cyan" id="stat-dynamic">—</div>
+      <div class="stat-label">Performance Rows</div>
+      <div class="stat-delta neutral" id="stat-dynamic-sub">Not loaded</div>
+    </div>
+    <div class="card stat-card">
+      <div class="card-icon icon-violet" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;">✨</div>
+      <div class="stat-value accent-violet" id="stat-gold">—</div>
+      <div class="stat-label">Gold Feature Rows</div>
+      <div class="stat-delta neutral" id="stat-gold-sub">Not loaded</div>
+    </div>
+    <div class="card stat-card">
+      <div class="card-icon icon-emerald" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;">💾</div>
+      <div class="stat-value accent-emerald" id="stat-db-size">—</div>
+      <div class="stat-label">DB Size (MB)</div>
+      <div class="stat-delta neutral" id="stat-date-range">No data</div>
+    </div>
+  </div>
+
+  <!-- -- Pipeline Stages -------------------------------------------- -->
+  <div class="section-title mb-12">Pipeline Stages</div>
+  <div class="pipeline-stages mb-36">
+
+    <!-- Stage 1: Ingest -->
+    <div class="card stage-card" id="stage-ingest">
+      <div class="stage-number">Stage 01</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div class="stage-name accent-blue">🔄 Bronze / Silver Ingest</div>
+        <span class="status-badge status-idle" id="ingest-status-badge">
+          <span class="dot"></span><span>Idle</span>
+        </span>
+      </div>
+      <div class="stage-desc">
+        Reads <code>loan_book.parquet</code> and <code>all_cutoffs.parquet</code>. Normalizes into
+        <em>static_loans</em> (1:1) and <em>dynamic_performance</em> (1:Many). Runs Bronze profiling checks.
+      </div>
+      <button class="btn btn-primary" id="btn-ingest" onclick="runStage('ingest')">
+        <span class="spinner"></span>
+        <span class="btn-label">▶ Run Ingestion</span>
+      </button>
+      <div class="progress-bar mt-12"><div class="progress-fill" id="ingest-progress" style="width:0%"></div></div>
+      <div class="log-box mt-12" id="ingest-log">Awaiting run...</div>
+    </div>
+
+    <!-- Stage 2: Validate -->
+    <div class="card stage-card" id="stage-validate">
+      <div class="stage-number">Stage 02</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div class="stage-name accent-violet">🔍 Gold Validation</div>
+        <span class="status-badge status-idle" id="validate-status-badge">
+          <span class="dot"></span><span>Idle</span>
+        </span>
+      </div>
+      <div class="stage-desc">
+        Runs 17 SQL checks across schema integrity, temporal sequences, lifecycle business rules,
+        and gold feature label quality. Reports pass/fail with query timings.
+      </div>
+      <button class="btn btn-primary" id="btn-validate" onclick="runStage('validate')">
+        <span class="spinner"></span>
+        <span class="btn-label">▶ Run Validation</span>
+      </button>
+      <div class="progress-bar mt-12"><div class="progress-fill" id="validate-progress" style="width:0%"></div></div>
+      <div class="log-box mt-12" id="validate-log">Awaiting run...</div>
+    </div>
+
+    <!-- Stage 3: Train -->
+    <div class="card stage-card" id="stage-train">
+      <div class="stage-number">Stage 03</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div class="stage-name accent-emerald">🤖 Baseline Model</div>
+        <span class="status-badge status-idle" id="train-status-badge">
+          <span class="dot"></span><span>Idle</span>
+        </span>
+      </div>
+      <div class="stage-desc">
+        XGBoost classifier trained on gold_features with Out-of-Time split (train ≤ 2024, test ≥ 2025).
+        Predicts <strong>default_in_3m</strong>. Reports AUC-ROC, Gini, PR curve.
+      </div>
+      <button class="btn btn-primary" id="btn-train" onclick="runStage('train')">
+        <span class="spinner"></span>
+        <span class="btn-label">▶ Train Model</span>
+      </button>
+      <div class="progress-bar mt-12"><div class="progress-fill" id="train-progress" style="width:0%"></div></div>
+      <div class="log-box mt-12" id="train-log">Awaiting run...</div>
+    </div>
+
+    <!-- Stage 4: Tokenize -->
+    <div class="card stage-card" id="stage-tokenize" style="grid-column: 1 / -1;">
+      <div class="stage-number">Stage 04 — Step 2</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div class="stage-name accent-amber">🔤 Tokenize &amp; Build Sequences</div>
+        <span class="status-badge status-idle" id="tokenize-status-badge">
+          <span class="dot"></span><span>Idle</span>
+        </span>
+      </div>
+      <div class="stage-desc" style="max-width:700px;">
+        Converts each loan's 24-month history into a padded integer token sequence using a
+        3-tier vocabulary: <em>special tokens</em>, <em>8 lifecycle event tokens</em> (PERF / DPD1-4 / DFLT / CHOF / RDMD),
+        and <em>quantile-binned continuous features</em> (CLTV · Rate · Balance · DPD).
+        Detects cure events (DPD->PERF transitions) and writes <code>sequences.parquet</code> + state transition matrix.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <button class="btn btn-primary" id="btn-tokenize" onclick="runStage('tokenize')">
+          <span class="spinner"></span>
+          <span class="btn-label">▶ Tokenize &amp; Build Sequences</span>
+        </button>
+        <button class="btn btn-secondary" id="btn-view-sequences" onclick="switchTab('sequences')">
+          📊 View Sequence Analysis
+        </button>
+      </div>
+      <div class="progress-bar mt-12"><div class="progress-fill" id="tokenize-progress" style="width:0%"></div></div>
+      <div class="log-box mt-12" id="tokenize-log">Awaiting run...</div>
+    </div>
+
+  </div>
+
+  <!-- -- Results Panels ---------------------------------------------- -->
+  <div class="section-title mb-12">Results &amp; Analysis</div>
+
+  <div class="tab-bar mb-20" role="tablist">
+    <button class="tab-btn active" id="tab-validation-btn" onclick="switchTab('validation')" role="tab" aria-selected="true">🔍 Validation Checks</button>
+    <button class="tab-btn"        id="tab-model-btn"      onclick="switchTab('model')"      role="tab" aria-selected="false">📊 Model Performance</button>
+    <button class="tab-btn"        id="tab-features-btn"   onclick="switchTab('features')"   role="tab" aria-selected="false">⭐ Feature Importance</button>
+    <button class="tab-btn"        id="tab-sequences-btn"  onclick="switchTab('sequences')"  role="tab" aria-selected="false">🔤 Sequences</button>
+    <button class="tab-btn"        id="tab-foundation-btn" onclick="switchTab('foundation')" role="tab" aria-selected="false">🧠 Foundation Model</button>
+    <button class="tab-btn"        id="tab-downstream-btn" onclick="switchTab('downstream')" role="tab" aria-selected="false">📈 Downstream</button>
+  </div>
+
+  <!-- -- TAB: Validation --------------------------------------------─ -->
+  <div class="tab-content active" id="tab-validation">
+    <div class="grid-2">
+
+      <!-- Validation Summary -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📋</span> Validation Summary</div>
+          <span class="pill pill-blue" id="validation-score">—</span>
+        </div>
+        <div class="metric-row">
+          <div class="metric-block">
+            <div class="metric-value accent-emerald" id="checks-passed">—</div>
+            <div class="metric-label">Passed</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-value accent-rose" id="checks-failed">—</div>
+            <div class="metric-label">Failed</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-value accent-amber" id="checks-total">—</div>
+            <div class="metric-label">Total Checks</div>
+          </div>
+        </div>
+        <div style="font-size:0.76rem; color:var(--text-muted); display:flex; justify-content:space-between; padding: 0 4px;">
+          <span>Runtime: <span id="validation-time" class="accent-cyan">—</span></span>
+          <span id="validation-status-pill"></span>
+        </div>
+      </div>
+
+      <!-- Category Breakdown -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📊</span> Category Breakdown</div>
+        </div>
+        <div class="chart-container" style="height:180px;">
+          <canvas id="validation-cat-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Checks List -->
+    <div class="card mt-16">
+      <div class="card-header">
+        <div class="card-title"><span>✅</span> Individual Checks</div>
+        <div id="checks-filter" style="display:flex;gap:8px;font-size:0.75rem;">
+          <label style="color:var(--text-muted);cursor:pointer;">
+            <input type="checkbox" id="filter-failed-only" onchange="filterChecks()" style="margin-right:4px;">Show failures only
+          </label>
+        </div>
+      </div>
+      <div class="checks-list" id="checks-list">
+        <div class="empty-state">
+          <span class="empty-icon">🔍</span>
+          <span>Run Validation to see check results</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- -- TAB: Model -------------------------------------------------- -->
+  <div class="tab-content" id="tab-model">
+    <!-- Metrics row -->
+    <div class="card mb-20">
+      <div class="card-header">
+        <div class="card-title"><span>🎯</span> Baseline XGBoost Metrics</div>
+        <span class="pill pill-violet">Out-of-Time Split</span>
+      </div>
+      <div class="metric-row" id="model-metrics-row">
+        <div class="metric-block">
+          <div class="metric-value accent-blue" id="metric-auc">—</div>
+          <div class="metric-label">AUC-ROC (Test)</div>
+        </div>
+        <div class="metric-block">
+          <div class="metric-value accent-violet" id="metric-gini">—</div>
+          <div class="metric-label">Gini (Test)</div>
+        </div>
+        <div class="metric-block">
+          <div class="metric-value accent-cyan" id="metric-avgprec">—</div>
+          <div class="metric-label">Avg Precision</div>
+        </div>
+        <div class="metric-block">
+          <div class="metric-value accent-amber" id="metric-defrate">—</div>
+          <div class="metric-label">Test Default Rate</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:28px;font-size:0.75rem;color:var(--text-muted);padding:0 4px;">
+        <span>Train rows: <span id="metric-trainrows" class="accent-blue">—</span></span>
+        <span>Test rows: <span id="metric-testrows" class="accent-cyan">—</span></span>
+        <span>Train time: <span id="metric-traintime" class="accent-amber">—</span>s</span>
+        <span>Split: <span id="metric-split" class="accent-violet" style="font-size:0.7rem">—</span></span>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <!-- ROC Curve -->
+      <div class="card">
+        <div class="card-title mb-12"><span>📈</span> ROC Curve</div>
+        <div class="chart-container">
+          <canvas id="roc-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Training Curve -->
+      <div class="card">
+        <div class="card-title mb-12"><span>🏋</span> Training Curve (AUC vs Rounds)</div>
+        <div class="chart-container">
+          <canvas id="train-curve-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- -- TAB: Features ----------------------------------------------─ -->
+  <div class="tab-content" id="tab-features">
+    <div class="grid-2">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>⭐</span> Top Feature Importances</div>
+          <span class="pill pill-emerald" id="feature-count">—</span>
+        </div>
+        <div class="feature-bars" id="feature-bars">
+          <div class="empty-state">
+            <span class="empty-icon">⭐</span>
+            <span>Train the model to see feature importances</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title mb-12"><span>🥧</span> Feature Category Mix</div>
+        <div class="chart-container">
+          <canvas id="feat-category-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <!-- -- TAB: Sequences --------------------------------------------─ -->
+  <div class="tab-content" id="tab-sequences">
+    <!-- Sequence KPI cards -->
+    <div class="grid-4 mb-20">
+      <div class="card stat-card">
+        <div style="font-size:18px;margin-bottom:8px;">📖</div>
+        <div class="stat-value accent-amber" id="seq-vocab-size">—</div>
+        <div class="stat-label">Vocabulary Size</div>
+        <div class="stat-delta neutral" id="seq-step-width">— tokens/step</div>
+      </div>
+      <div class="card stat-card">
+        <div style="font-size:18px;margin-bottom:8px;">🔗</div>
+        <div class="stat-value accent-blue" id="seq-total-loans">—</div>
+        <div class="stat-label">Unique Sequences</div>
+        <div class="stat-delta neutral" id="seq-avg-len">Avg len —</div>
+      </div>
+      <div class="card stat-card">
+        <div style="font-size:18px;margin-bottom:8px;">💊</div>
+        <div class="stat-value accent-emerald" id="seq-cure-rate">—</div>
+        <div class="stat-label">Cure Rate</div>
+        <div class="stat-delta positive" id="seq-cure-abs">— cured loans</div>
+      </div>
+      <div class="card stat-card">
+        <div style="font-size:18px;margin-bottom:8px;">[WARNING]️</div>
+        <div class="stat-value accent-rose" id="seq-default-rate">—</div>
+        <div class="stat-label">Sequence Default Rate</div>
+        <div class="stat-delta negative" id="seq-default-abs">— defaulted loans</div>
+      </div>
+    </div>
+
+    <div class="grid-2 mb-20">
+      <!-- Vocabulary breakdown -->
+      <div class="card">
+        <div class="card-title mb-12"><span>📖</span> Vocabulary Tiers</div>
+        <div id="vocab-tiers" style="display:flex;flex-direction:column;gap:8px;">
+          <div class="empty-state"><span class="empty-icon">🔤</span><span>Run tokenization to see vocabulary</span></div>
+        </div>
+      </div>
+
+      <!-- Event frequency bar chart -->
+      <div class="card">
+        <div class="card-title mb-12"><span>📊</span> Lifecycle Event Frequency</div>
+        <div class="chart-container" style="height:220px;">
+          <canvas id="event-freq-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- State transition heatmap -->
+    <div class="card mb-20">
+      <div class="card-header">
+        <div class="card-title"><span>🔄</span> State Transition Probability Matrix</div>
+        <span class="pill pill-violet" id="trans-total">—</span>
+      </div>
+      <div id="transition-heatmap" style="overflow-x:auto;">
+        <div class="empty-state"><span class="empty-icon">🔄</span><span>Run tokenization to see transition matrix</span></div>
+      </div>
+    </div>
+
+    <!-- Sample loan timeline -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span>📈</span> Sample Loan Timeline Previews</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);">First 6 loans in sequence store</div>
+      </div>
+      <div id="loan-timelines" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="empty-state"><span class="empty-icon">📈</span><span>Run tokenization to see loan timelines</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- -- TAB: Foundation Model ---------------------------------------- -->
+  <div class="tab-content" id="tab-foundation">
+
+    <!-- Training Configuration -->
+    <div class="card mb-20">
+      <div class="card-header">
+        <div class="card-title"><span>⚙️</span> Training Configuration</div>
+        <span class="status-badge status-idle" id="fm-train-status">
+          <span class="dot"></span><span id="fm-train-status-text">Ready</span>
+        </span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:18px;">
+        <!-- Architecture -->
+        <div>
+          <label for="fm-arch" style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.06em;">Architecture</label>
+          <select id="fm-arch" class="fm-select">
+            <option value="hybrid" selected>🔀 Hybrid (TFT+PatchTST)</option>
+            <option value="patchtst">📊 PatchTST</option>
+            <option value="tft">📈 TFT</option>
+            <option value="lightweight">⚡ Lightweight</option>
+            <option value="lstm_baseline">🔁 LSTM Baseline</option>
+            <option value="all">🔄 All Architectures</option>
+          </select>
+        </div>
+        <!-- Strategy -->
+        <div>
+          <label for="fm-strategy" style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.06em;">Training Strategy</label>
+          <select id="fm-strategy" class="fm-select">
+            <option value="full" selected>Full (Pre→Joint→Fine)</option>
+            <option value="pretrain_only">Pretrain Only</option>
+            <option value="pretrain_finetune">Pretrain → Finetune</option>
+            <option value="finetune_only">Finetune Only</option>
+            <option value="joint_finetune">Joint → Finetune</option>
+          </select>
+        </div>
+        <!-- Profile -->
+        <div>
+          <label for="fm-profile" style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.06em;">Profile</label>
+          <select id="fm-profile" class="fm-select">
+            <option value="default" selected>Default (64d / 3L / 4H)</option>
+            <option value="small">Small (32d / 2L / 2H)</option>
+            <option value="large">Large (128d / 4L / 8H)</option>
+            <option value="fast">Fast (32d / 1L / 2H)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Epoch overrides -->
+      <details class="fm-details">
+        <summary>🔧 Advanced: Epoch Overrides</summary>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:12px;">
+          <div>
+            <label for="fm-pretrain-epochs" style="font-size:0.72rem; color:var(--text-muted);">Pretrain Epochs</label>
+            <input type="number" id="fm-pretrain-epochs" class="fm-input" placeholder="(profile default)" min="1">
+          </div>
+          <div>
+            <label for="fm-joint-epochs" style="font-size:0.72rem; color:var(--text-muted);">Joint Epochs</label>
+            <input type="number" id="fm-joint-epochs" class="fm-input" placeholder="(profile default)" min="1">
+          </div>
+          <div>
+            <label for="fm-finetune-epochs" style="font-size:0.72rem; color:var(--text-muted);">Finetune Epochs</label>
+            <input type="number" id="fm-finetune-epochs" class="fm-input" placeholder="(profile default)" min="1">
+          </div>
+        </div>
+      </details>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px;">
+        <button class="btn btn-primary" id="btn-fm-train" onclick="runFoundationTraining()">
+          <span class="spinner"></span>
+          <span class="btn-label">🚀 Train Foundation Model</span>
+        </button>
+        <button class="btn btn-secondary" id="btn-fm-compare" onclick="loadFoundationComparison()">
+          📊 Compare All Runs
+        </button>
+      </div>
+      <div class="progress-bar mt-12"><div class="progress-fill" id="fm-progress" style="width:0%"></div></div>
+      <div class="log-box mt-12" id="fm-log" style="max-height:200px;">Awaiting training run...</div>
+    </div>
+
+    <div class="grid-2 mb-20">
+      <!-- Run History -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📜</span> Run History</div>
+          <button class="btn btn-secondary" style="width:auto; padding:4px 12px; font-size:0.72rem;" onclick="loadFoundationRuns()">↻ Refresh</button>
+        </div>
+        <div id="fm-runs-table" style="max-height:320px; overflow-y:auto;">
+          <div class="empty-state"><span class="empty-icon">📜</span><span>No training runs yet</span></div>
+        </div>
+      </div>
+
+      <!-- Active Run Metrics -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📊</span> Selected Run Metrics</div>
+          <span class="pill pill-violet" id="fm-selected-run-id">—</span>
+        </div>
+        <div id="fm-run-metrics">
+          <div class="empty-state"><span class="empty-icon">📊</span><span>Select a run to view metrics</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Training Curves + ROC -->
+    <div class="grid-2 mb-20">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📉</span> Training Curves</div>
+        </div>
+        <div class="chart-container" style="height:280px;">
+          <canvas id="fm-training-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span>📈</span> ROC Curve</div>
+        </div>
+        <div class="chart-container" style="height:280px;">
+          <canvas id="fm-roc-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison Table -->
+    <div class="card" id="fm-comparison-card" style="display:none;">
+      <div class="card-header">
+        <div class="card-title"><span>⚖️</span> Cross-Run Comparison</div>
+      </div>
+      <div id="fm-comparison-table" style="overflow-x:auto;"></div>
+    </div>
+
+  </div>
+
+  <!-- -- TAB: Downstream Tasks ---------------------------------------- -->
+  <div class="tab-content" id="tab-downstream">
+    <div class="glass-header mb-20">
+      <h2>Downstream Risk Evaluation & Delinquency Early Warning</h2>
+      <p>Plug trained foundation embeddings into downstream classifiers and evaluate timeliness, calibration, and fairness.</p>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
+      <!-- Trigger Card -->
+      <div class="card">
+        <h3>1. Select Foundation Model Run</h3>
+        <select id="downstream-run-select" class="form-select mb-12">
+          <option value="">-- Select Trained Run --</option>
+        </select>
+        <button class="btn btn-primary w-full" id="btn-run-downstream" onclick="triggerDownstreamEval()" style="width: 100%;">
+          <span class="spinner"></span>
+          <span class="btn-label">⚡ Run Downstream Eval</span>
+        </button>
+        <div id="downstream-status-message" class="text-muted mt-12" style="font-size: 0.8rem; margin-top: 12px;">Select a run with exported embeddings.</div>
+      </div>
+
+      <!-- Leaderboard Card -->
+      <div class="card">
+        <h3>Downstream Model Leaderboard (Sorted by PR-AUC)</h3>
+        <table class="data-table" id="downstream-leaderboard-table" style="width: 100%;">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>PR-AUC ↑</th>
+              <th>AUC-ROC</th>
+              <th>Gini</th>
+              <th>Brier</th>
+              <th>ECE (Calib)</th>
+              <th>Capture @ 5%</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="7" class="text-center">Select and evaluate a run to view results.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Dashboard Charts Grid -->
+    <div class="grid-2 mt-20" id="downstream-charts-grid" style="display:none; margin-top: 20px;">
+      <!-- Chart 1: Early Warning Curve -->
+      <div class="card">
+        <h3 style="margin-bottom: 12px;">Delinquency Early Warning (PR-AUC vs Horizon)</h3>
+        <div class="chart-container" style="position: relative; height:300px;">
+          <canvas id="downstream-early-warning-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 2: Calibration Curves -->
+      <div class="card">
+        <h3 style="margin-bottom: 12px;">Probability Calibration Curves (Reliability Diagram)</h3>
+        <div class="chart-container" style="position: relative; height:300px;">
+          <canvas id="downstream-calibration-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 3: ESG & Cohort Performance Slices -->
+      <div class="card">
+        <h3 style="margin-bottom: 12px;">Green RMBS Fairness Validation (PR-AUC across EPC)</h3>
+        <div class="chart-container" style="position: relative; height:300px;">
+          <canvas id="downstream-cohort-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 4: Business Interpretation Card -->
+      <div class="card font-glass text-light" style="padding-bottom: 20px; display: flex; flex-direction: column; justify-content: space-between;">
+        <h3 style="margin-bottom: 12px;">Business Interpretation & Portfolio Lift</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
+          <div class="card stat-card" style="background: rgba(0,0,0,0.2);">
+            <div class="stat-value text-emerald accent-emerald" id="business-outreach-lift">--</div>
+            <div class="stat-label">Outreach Capture Lift vs Baseline</div>
+          </div>
+          <div class="card stat-card" style="background: rgba(0,0,0,0.2);">
+            <div class="stat-value text-amber accent-amber" id="business-capture-rate">--</div>
+            <div class="stat-label">Defaults Flagged in Top 5% Volume</div>
+          </div>
+        </div>
+        <p class="mt-12 text-sm text-muted" style="margin-top: 12px; font-size: 0.8rem; color: var(--text-muted);">
+          <strong>Green Mortgage Slicing Analysis:</strong> The ESG evaluation validates whether the model maintains consistent risk capture across energy performance ratings (EPC A-G) without introducing geographical or property-type bias.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /#app -->
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

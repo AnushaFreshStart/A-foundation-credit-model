@@ -1,0 +1,150 @@
+# =============================================================================
+# NeMo-Compatible Configuration Scaffold — Credit Foundation Model
+# =============================================================================
+# This file documents the model and training configuration in NeMo YAML format
+# for future deployment on DGX infrastructure with NVIDIA acceleration.
+#
+# NOTE: This file is NOT used at runtime. The current implementation uses
+# pure PyTorch with FP16 AMP. This scaffold is provided for production
+# migration planning.
+# =============================================================================
+
+model:
+  name: credit_foundation_model
+  architecture: hybrid  # patchtst | tft | hybrid | lightweight | lstm_baseline
+
+  # Model hyperparameters
+  embed_dim: 64
+  n_heads: 4
+  n_layers: 3
+  patch_size: 4
+  ff_dim: 256
+  dropout: 0.1
+
+  # Vocabulary (from LoanTokenizer)
+  vocab_size: 53
+  max_seq_len: 24
+  step_width: 5
+
+  # Output
+  num_targets: 2  # default_in_3m + had_cure
+  embedding_export: true
+
+  # Architecture-specific
+  tft:
+    use_variable_selection: true
+    grn_hidden_dim: 64
+    lstm_layers: 2
+    lstm_bidirectional: true
+  patchtst:
+    channel_independent: true
+    revin: true  # Reversible Instance Normalization
+  hybrid:
+    use_vsn: true
+    use_patching: true
+    use_grn_gating: true
+
+
+training:
+  # Three-stage pipeline
+  stages:
+    - name: pretrain
+      objective: masked_patch_prediction
+      loss: cross_entropy
+      epochs: 50
+      mask_prob: 0.15
+    - name: joint
+      objective: multi_objective
+      loss:
+        mse_weight: 1.0
+        nll_weight: 0.5
+        calibration_weight: 0.3
+      epochs: 30
+    - name: finetune
+      objective: multi_task_classification
+      loss:
+        default_loss: focal  # focal_gamma=2.0, focal_alpha=0.75
+        cure_loss: bce
+        cure_weight: 0.5
+      epochs: 20
+
+  optimizer:
+    name: AdamW
+    lr: 1.0e-4
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  scheduler:
+    name: CosineAnnealingLR
+    T_max: null  # set to total epochs per stage
+    eta_min: 1.0e-7
+
+  gradient_clipping:
+    max_norm: 1.0
+
+  early_stopping:
+    patience: 10
+    monitor: val_loss
+    mode: min
+
+  batch_size: 64
+  dataloader_workers: 0  # Windows compatibility
+
+
+# NVIDIA Acceleration (for DGX deployment)
+acceleration:
+  # FP16 AMP (current — works on RTX A2000 / Ampere)
+  fp16:
+    enabled: true
+    backend: torch.amp
+    dtype: float16
+    grad_scaler: true
+
+  # FP8 (future — requires Hopper H100/H200)
+  fp8:
+    enabled: false
+    backend: transformer_engine
+    note: "Requires NVIDIA Hopper GPU (H100/H200). Not available on RTX A2000."
+
+  # Sequence Parallelism (for multi-GPU)
+  sequence_parallelism:
+    enabled: false
+    note: "For DGX with multiple GPUs. Not needed for single-GPU training."
+
+  # Activation Recomputation (memory optimization)
+  activation_recomputation:
+    enabled: false
+    note: "Enable for larger models that don't fit in GPU memory."
+
+  # Auto Configurator
+  auto_configurator:
+    enabled: false
+    note: "NeMo tool to find optimal parallelism strategy on DGX cluster."
+
+
+# Data configuration
+data:
+  sequences_parquet: "../tokenize-sequences-result/sequences.parquet"
+  tokenizer_json: "../tokenize-sequences-result/tokenizer.json"
+  database: "../pipelines/credit_validate.db"
+  split:
+    method: out_of_time
+    train_year_max: 2024
+    fallback: random_80_20
+
+
+# Infrastructure notes
+infrastructure:
+  current:
+    hardware: "Intel i9-11950H + RTX A2000 (4GB)"
+    precision: fp16
+    estimated_training_time: "5-7 minutes"
+  production:
+    hardware: "DGX A100 / H100"
+    precision: fp8
+    features:
+      - sequence_parallelism
+      - activation_recomputation
+      - auto_configurator
+      - multi_node_training

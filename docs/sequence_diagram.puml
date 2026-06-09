@@ -1,0 +1,232 @@
+@startuml CFM_Pipeline_Sequence
+
+!theme cyborg
+skinparam backgroundColor #1a1a2e
+skinparam sequenceArrowColor #00d4ff
+skinparam sequenceLifeLineBorderColor #00d4ff
+skinparam sequenceParticipantBorderColor #00d4ff
+skinparam sequenceParticipantBackgroundColor #16213e
+skinparam sequenceParticipantFontColor #e0e0e0
+skinparam sequenceGroupBorderColor #e94560
+skinparam sequenceGroupHeaderFontColor #e94560
+skinparam sequenceDividerBackgroundColor #0f3460
+skinparam sequenceDividerFontColor #00d4ff
+skinparam noteBorderColor #e94560
+skinparam noteBackgroundColor #16213e
+skinparam noteFontColor #e0e0e0
+skinparam sequenceBoxBorderColor #533483
+skinparam sequenceBoxBackgroundColor #1a1a2e
+skinparam sequenceBoxFontColor #00d4ff
+
+title **Credit Foundation Model — Phase 1 Pipeline Sequence**\n<size:12>Ingest → Normalize → Validate → Baseline Model</size>
+
+actor "User /\nDashboard" as User #e94560
+box "FastAPI Backend" #1a1a2e
+  participant "app.py" as API #16213e
+end box
+box "Data Pipeline Scripts" #1a1a2e
+  participant "ingest_bronze.py" as Ingest #16213e
+  participant "validate_gold.py" as Validate #16213e
+  participant "baseline_model.py" as Baseline #16213e
+end box
+box "Data Sources" #1a1a2e
+  participant "Parquet Files\n(synthetic-data-designer)" as Parquet #16213e
+end box
+box "PostgreSQL 16" #1a1a2e
+  database "credit_validate" as PG #0f3460
+end box
+
+== **Phase 0: Schema Initialization** ==
+
+User -> API : POST /api/run/ingest
+activate API
+API -> PG : Execute **db_schema.sql**
+activate PG
+note right of PG
+  CREATE TABLE static_loans (
+    loan_id VARCHAR PRIMARY KEY,
+    origination_year, original_balance,
+    province, employment_status,
+    nhg_flag, legal_maturity_months,
+    ... 23 static columns
+  );
+  
+  CREATE TABLE dynamic_performance (
+    loan_id VARCHAR REFERENCES static_loans,
+    reporting_date DATE,
+    current_balance, days_past_due,
+    default_crr_flag, performing_status,
+    ... 15 dynamic columns,
+    PRIMARY KEY (loan_id, reporting_date)
+  );
+  
+  CREATE MATERIALIZED VIEW gold_features
+    -- LEAD() window for default_in_3m label
+end note
+PG --> API : Schema created ✓
+deactivate PG
+
+== **Phase 1: Bronze Ingestion (Raw Data Load)** ==
+
+API -> Ingest : trigger_ingest()
+activate Ingest
+Ingest -> Parquet : Read all_cutoffs.parquet\n(222,922 loan-month rows × 71 cols)
+activate Parquet
+Parquet --> Ingest : pandas DataFrame
+deactivate Parquet
+
+note over Ingest
+  **Bronze Profiling Checks:**
+  • Primary key uniqueness (loan_id + reporting_date)
+  • NULL counts across all 71 columns
+  • Schema alignment with ESMA Annex 2
+  • Data type verification
+end note
+
+Ingest -> Ingest : Split DataFrame into\nstatic vs. dynamic columns
+
+== **Phase 2: Silver Normalization (Dimensional Split)** ==
+
+group Static Dimension [Deduplicated 1:1 per loan_id]
+  Ingest -> PG : UPSERT INTO static_loans\n(~10,000 unique loans)
+  activate PG
+  note right of PG
+    ON CONFLICT (loan_id) DO NOTHING
+    — guarantees immutability
+    of static traits
+  end note
+  PG --> Ingest : 10,000 rows upserted ✓
+  deactivate PG
+end
+
+group Dynamic Dimension [1:Many temporal series]
+  Ingest -> PG : INSERT INTO dynamic_performance\n(~222,922 loan-month rows)
+  activate PG
+  note right of PG
+    CHECK constraints enforce:
+    • current_balance >= 0
+    • days_past_due >= 0
+    • valid enum values
+    
+    FK constraint enforces:
+    • loan_id EXISTS in static_loans
+  end note
+  PG --> Ingest : 222,922 rows inserted ✓
+  deactivate PG
+end
+
+Ingest --> API : Ingestion Report (JSON)\n{rows_loaded, null_counts, violations}
+deactivate Ingest
+API --> User : Display Bronze/Silver\nprofiling stats
+deactivate API
+
+== **Phase 3: Gold Validation (Business Rules)** ==
+
+User -> API : POST /api/run/validate
+activate API
+API -> Validate : trigger_validate()
+activate Validate
+
+group Cross-Field Coherence [Static fields must not vary]
+  Validate -> PG : SELECT loan_id, COUNT(DISTINCT original_balance)\n  FROM raw JOIN static ... GROUP BY loan_id\n  HAVING COUNT(DISTINCT ...) > 1
+  activate PG
+  PG --> Validate : Violations (should be 0)
+  deactivate PG
+end
+
+group Temporal Coherence [Monotonic sequence checks]
+  Validate -> PG : WITH ordered AS (\n  SELECT *, LAG(reporting_date) OVER\n    (PARTITION BY loan_id ORDER BY reporting_date) AS prev_date,\n  LAG(seasoning_months) OVER (...) AS prev_seasoning\n  FROM dynamic_performance\n)\nSELECT * WHERE reporting_date <= prev_date\n  OR seasoning_months != prev_seasoning + 1
+  activate PG
+  PG --> Validate : Temporal violations
+  deactivate PG
+end
+
+group Lifecycle Coherence [State-transition rules]
+  Validate -> PG : -- Defaulted loans must freeze balance\nSELECT * FROM dynamic_performance\nWHERE default_crr_flag = TRUE\n  AND current_balance != LAG(current_balance)\n    OVER (PARTITION BY loan_id ORDER BY reporting_date)
+  activate PG
+  PG --> Validate : Lifecycle violations
+  deactivate PG
+
+  Validate -> PG : -- Terminal loans must zero out\nSELECT * FROM dynamic_performance\nWHERE performing_status IN ('Charged-Off','Redeemed')\n  AND current_balance != 0
+  activate PG
+  PG --> Validate : Terminal state violations
+  deactivate PG
+end
+
+Validate -> PG : REFRESH MATERIALIZED VIEW gold_features
+activate PG
+PG --> Validate : View refreshed ✓
+deactivate PG
+
+Validate --> API : Validation Report (JSON)\n{tests_passed, tests_failed, details[]}
+deactivate Validate
+API --> User : Display validation\ngauges & pass/fail summary
+deactivate API
+
+== **Phase 4: Baseline Model Training** ==
+
+User -> API : POST /api/run/train-baseline
+activate API
+API -> Baseline : trigger_train()
+activate Baseline
+
+Baseline -> PG : SELECT * FROM gold_features\nWHERE reporting_date < '2025-01-01'
+activate PG
+note right of PG
+  **gold_features view returns:**
+  • Snapshot features at each cutoff
+  • Computed label: default_in_3m
+    (LEAD of default_crr_flag
+     over next 3 reporting months)
+end note
+PG --> Baseline : Train set (2024 cutoffs)
+deactivate PG
+
+Baseline -> PG : SELECT * FROM gold_features\nWHERE reporting_date >= '2025-01-01'
+activate PG
+PG --> Baseline : Test set (2025 cutoffs)
+deactivate PG
+
+Baseline -> Baseline : Encode categoricals\n(employment_status,\nprovince, loan_purpose, ...)
+
+Baseline -> Baseline : Train XGBoost Classifier\n(early stopping, eval on test)
+
+note over Baseline
+  **Features used:**
+  • employment_status, borrower_type
+  • original_balance, current_balance
+  • current_interest_rate_pct
+  • cltomv_current (LTV)
+  • days_past_due, arrears_amount
+  • seasoning_months
+  
+  **Target:**
+  • default_in_3m (binary)
+  
+  **Split:**
+  • Train: Jan 2024 – Dec 2024 (OOT)
+  • Test:  Jan 2025 – Dec 2025 (OOT)
+end note
+
+Baseline -> Baseline : Compute metrics:\nAUC-ROC, Gini, Precision-Recall
+
+Baseline -> Baseline : Extract feature importances\n(gain-based ranking)
+
+Baseline --> API : Model Results (JSON)\n{auc_roc, gini, feature_importance[],\nroc_curve_points[], confusion_matrix}
+deactivate Baseline
+
+API --> User : Display ROC curve,\nfeature importance bars,\nperformance summary
+deactivate API
+
+== **Post-Pipeline: Governance Artifacts** ==
+
+note over User, PG
+  **Outputs available for downstream stages:**
+  ├── PostgreSQL: static_loans, dynamic_performance, gold_features
+  ├── Model weights: data/models/xgb_baseline.json
+  ├── Metrics: data/models/baseline_metrics.json
+  ├── Validation report: data/reports/validation_report.json
+  └── Ready for Stage 2: Tokenize & Sequence → Foundation Model pre-training
+end note
+
+@enduml
