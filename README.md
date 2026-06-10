@@ -7,11 +7,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install data-designer numpy pandas pyarrow duckdb
 
-# Smoke test (10k records)
 python run.py --num-records 10000 --out-dir .\out_10k --deal-year 2024 --seed 42
 
-# Or use the existing production 500k dataset
-# python run.py --num-records 500000 --out-dir .\out_500k --deal-year 2024 --seed 42
 
 cd A-foundation-credit-model\src\credit-foundation-model
 python -m venv .venv
